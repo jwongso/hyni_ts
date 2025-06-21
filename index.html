@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyni Chat - Multi-Provider LLM Interface</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>
+                <span>🤖</span>
+                <span>Hyni Chat - Multi-Provider LLM Interface</span>
+            </h1>
+        </header>
+
+        <div class="main-grid">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <!-- Provider Selection -->
+                <div class="section">
+                    <div class="section-title">Provider & Model</div>
+                    <select id="provider-select" class="provider-select">
+                        <option value="">Select Provider...</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="claude">Claude (Anthropic)</option>
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="mistral">Mistral</option>
+                    </select>
+                    <select id="model-select" class="model-select" style="margin-top: 10px;" disabled>
+                        <option value="">Select Model...</option>
+                    </select>
+                </div>
+
+                <!-- API Keys -->
+                <div class="section">
+                    <div class="section-title">API Keys</div>
+                    <div id="api-keys-container"></div>
+                    <div class="file-upload">
+                        <input type="file" id="file-input" class="file-input" accept=".hynirc,.txt">
+                        <label for="file-input" class="file-label">📁 Load from .hynirc</label>
+                    </div>
+                </div>
+
+                <!-- Statistics -->
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-value" id="message-count">0</div>
+                        <div class="stat-label">Messages</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="token-count">0</div>
+                        <div class="stat-label">Tokens</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Area -->
+            <div class="chat-container">
+                <div class="chat-header">
+                    <div>
+                        <span id="current-provider">No provider selected</span>
+                        <span id="current-model" style="color: #666; font-size: 14px; margin-left: 10px;"></span>
+                        <span id="broadcast-indicator" class="broadcast-indicator" style="display: none; margin-left: 10px;">BROADCAST MODE</span>
+                    </div>
+                    <button id="clear-chat" class="btn-small btn-danger">Clear Chat</button>
+                </div>
+
+                <div class="chat-messages" id="chat-messages">
+                    <div style="text-align: center; color: #999; padding: 40px;">
+                        Select a provider and enter your API key to start chatting
+                    </div>
+                </div>
+
+                <div class="chat-input-container">
+                    <div class="chat-input-wrapper">
+                        <textarea
+                            id="chat-input"
+                            class="chat-input"
+                            placeholder="Type your message here... (Ctrl+Enter to send)"
+                            disabled
+                        ></textarea>
+                        <button id="send-button" class="send-button" disabled>
+                            <span id="send-text">Send</span>
+                            <span id="send-spinner" class="loading-spinner" style="display: none;"></span>
+                        </button>
+                    </div>
+                    <div class="chat-options">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="broadcast-check">
+                            <label for="broadcast-check" title="Send to all configured providers">📡 Broadcast</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="streaming-check">
+                            <label for="streaming-check">Enable Streaming</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="markdown-check" checked>
+                            <label for="markdown-check">Render Markdown</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="text" id="system-message" placeholder="System message (optional)" style="margin-left: 20px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { HyniChat } from './hyni-chat.js';
+
+        // Initialize the app
+        window.hyniChat = new HyniChat();
+    </script>
+</body>
+</html>
