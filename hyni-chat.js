@@ -1,190 +1,363 @@
 import { GeneralContext } from './dist/general_context.js';
+import { InputManager } from './modules/ui/input-manager.js';
+import { ChatManager } from './modules/chat/chat-manager.js';
+import { ProviderManager } from './modules/chat/provider-manager.js';
+import { MessageRenderer } from './modules/chat/message-renderer.js';
+import { UIController } from './modules/ui/ui-controller.js';
 import {
     getApiKeyForProvider,
     setApiKeyForProvider,
     loadApiKeysFromFile,
-    parseHynirc,
     maskApiKey
 } from './dist/api-keys.js';
 
 export class HyniChat {
     constructor() {
-        this.contexts = new Map();
-        this.currentProvider = null;
-        this.currentContext = null;
-        this.messageCount = 0;
-        this.tokenCount = 0;
-        this.isProcessing = false;
-        this.activeBroadcasts = new Set();
+        // Initialize managers
+        this.chatManager = new ChatManager();
+        this.providerManager = new ProviderManager(this.chatManager);
 
-        this.initializeUI();
-        this.loadProviderKeys();
+        // Initialize UI components
+        const messagesContainer = document.getElementById('chat-messages');
+        this.messageRenderer = new MessageRenderer(messagesContainer);
+        window.messageRenderer = this.messageRenderer;
+
+        // State
+        this.currentProvider = null;
+        this.isProcessing = false;
+
+        // Wait for input manager to be ready
+        window.addEventListener('inputManagerReady', () => {
+            this.uiController = new UIController();
+            this.initializeUI();
+            this.loadProviderKeys();
+        }, { once: true });
+
+        // Initialize input manager (it will trigger the event when ready)
+        this.inputManager = new InputManager();
+        this.inputManager.setOnInputCallback((text) => {
+            console.log('Input received:', text);
+            this.handleInput(text);
+        });
+        window.inputManager = this.inputManager;
     }
 
     initializeUI() {
-        // Provider selection
-        const providerSelect = document.getElementById('provider-select');
-        providerSelect.addEventListener('change', (e) => this.onProviderChange(e.target.value));
+        // Set up UI callbacks
+        this.uiController.onProviderChange((provider) => this.onProviderChange(provider));
+        this.uiController.onModelChange((model) => this.onModelChange(model));
+        this.uiController.onBroadcastModeChange((enabled) => this.onBroadcastModeChange(enabled));
+        this.uiController.onStreamingChange((enabled) => this.onStreamingChange(enabled));
+        this.uiController.onMarkdownChange((enabled) => this.onMarkdownChange(enabled));
+        this.uiController.onMultiTurnChange((enabled) => this.onMultiTurnChange(enabled));
+        this.uiController.onClearChat(() => this.clearChat());
 
-        // Model selection
-        const modelSelect = document.getElementById('model-select');
-        modelSelect.addEventListener('change', (e) => this.onModelChange(e.target.value));
+        // File upload for API keys - add null check
+        const fileInput = document.getElementById('file-input');
+        if (fileInput) {
+            fileInput.addEventListener('change', (e) => this.loadKeysFromFile(e));
+        } else {
+            console.warn('File input element not found');
+        }
 
-        // Send button
+        // Add send button handler for text input
         const sendButton = document.getElementById('send-button');
-        sendButton.addEventListener('click', () => this.sendMessage());
+        if (sendButton) {
+            sendButton.addEventListener('click', () => {
+                const textInput = document.getElementById('text-input');
+                if (textInput) {
+                    const message = textInput.value.trim();
+                    if (message) {
+                        this.handleInput(message);
+                        textInput.value = ''; // Clear input after sending
+                    }
+                }
+            });
+        }
 
-        // Input field
-        const chatInput = document.getElementById('chat-input');
-        chatInput.addEventListener('keydown', (e) => {
-            if (e.ctrlKey && e.key === 'Enter') {
-                e.preventDefault();
-                this.sendMessage();
-            }
-        });
-
-        // Clear chat
-        document.getElementById('clear-chat').addEventListener('click', () => this.clearChat());
-
-        // File upload
-        document.getElementById('file-input').addEventListener('change', (e) => this.loadKeysFromFile(e));
-
-        // Broadcast checkbox
-        const broadcastCheck = document.getElementById('broadcast-check');
-        broadcastCheck.addEventListener('change', (e) => {
-            this.updateBroadcastUI(e.target.checked);
-        });
-
-        // Initialize API key UI
+        // Initialize API keys UI
         this.updateApiKeysUI();
     }
 
-    updateBroadcastUI(isBroadcast) {
-        const sendButton = document.getElementById('send-button');
-        const broadcastIndicator = document.getElementById('broadcast-indicator');
-        const providerSelect = document.getElementById('provider-select');
-        const modelSelect = document.getElementById('model-select');
+    async handleInput(text) {
+        if (!text || text.trim() === '') return;
 
-        if (isBroadcast) {
-            sendButton.classList.add('broadcast-mode');
-            broadcastIndicator.style.display = 'inline-block';
-            document.getElementById('send-text').textContent = 'Broadcast';
+        const state = this.uiController.getState();
 
-            // Check if any provider has API key
-            const hasAnyKey = this.getConfiguredProviders().length > 0;
-            document.getElementById('chat-input').disabled = !hasAnyKey;
-            sendButton.disabled = !hasAnyKey;
-
-            if (!hasAnyKey) {
-                this.showMessage('system', 'Please configure at least one API key to use broadcast mode.');
-            }
+        if (state.broadcastMode) {
+            await this.broadcastMessage(text);
         } else {
-            sendButton.classList.remove('broadcast-mode');
-            broadcastIndicator.style.display = 'none';
-            document.getElementById('send-text').textContent = 'Send';
-
-            // Restore normal state based on current provider
-            if (this.currentContext) {
-                const hasKey = this.currentContext.hasApiKey();
-                document.getElementById('chat-input').disabled = !hasKey;
-                sendButton.disabled = !hasKey;
-            }
+            await this.sendSingleMessage(text);
         }
     }
 
-    getConfiguredProviders() {
-        const providers = ['openai', 'claude', 'deepseek', 'mistral'];
-        return providers.filter(provider => {
-            const apiKey = getApiKeyForProvider(provider);
-            return !!apiKey;
-        });
+    async sendSingleMessage(message) {
+        if (this.isProcessing || !this.currentProvider) return;
+
+        this.isProcessing = true;
+        this.uiController.setProcessing(true);
+
+        // Add user message
+        this.messageRenderer.addUserMessage(message);
+        this.chatManager.addMessage('user', message, this.currentProvider);
+
+        try {
+            const state = this.uiController.getState();
+            const systemMessage = this.uiController.getSystemMessage();
+
+            // Get the context
+            const context = this.chatManager.getContext(this.currentProvider);
+
+            // Clear messages if multi-turn is disabled
+            if (!state.multiTurnEnabled && context) {
+                context.clearUserMessages();
+            }
+
+            if (state.streamingEnabled) {
+                const streamingMessage = this.messageRenderer.createStreamingMessage(this.currentProvider);
+
+                await this.providerManager.sendToProvider(this.currentProvider, message, {
+                    streaming: true,
+                    systemMessage: systemMessage,
+                    onProgress: (chunk, fullText) => {
+                        streamingMessage.updateContent(fullText);
+                    },
+                    onComplete: (fullText) => {
+                        streamingMessage.finalize();
+
+                        // Only add to context/history if multi-turn is enabled
+                        if (state.multiTurnEnabled) {
+                            this.chatManager.addMessage('assistant', fullText, this.currentProvider);
+                        }
+
+                        this.updateStats();
+                    },
+                    onError: (error) => {
+                        this.messageRenderer.addSystemMessage(`Error: ${error.message}`, 'error');
+                    }
+                });
+            } else {
+                await this.providerManager.sendToProvider(this.currentProvider, message, {
+                    streaming: false,
+                    systemMessage: systemMessage,
+                    onComplete: (text, usage) => {
+                        // Add assistant message to UI
+                        this.messageRenderer.addAssistantMessage(text, this.currentProvider);
+
+                        // Only add to context/history if multi-turn is enabled
+                        if (state.multiTurnEnabled) {
+                            this.chatManager.addMessage('assistant', text, this.currentProvider);
+                        }
+
+                        if (usage?.total_tokens) {
+                            this.chatManager.updateTokenCount(usage.total_tokens);
+                        }
+                        this.updateStats();
+                    },
+                    onError: (error) => {
+                        this.messageRenderer.addSystemMessage(`Error: ${error.message}`, 'error');
+                    }
+                });
+            }
+
+        } catch (error) {
+            console.error('Error sending message:', error);
+            this.messageRenderer.addSystemMessage(`Error: ${error.message}`, 'error');
+        } finally {
+            this.isProcessing = false;
+            this.uiController.setProcessing(false);
+        }
     }
 
-    async onProviderChange(provider) {
-        const broadcastMode = document.getElementById('broadcast-check').checked;
+    async broadcastMessage(message) {
+        if (this.isProcessing) return;
 
-        if (!provider && !broadcastMode) {
-            this.currentProvider = null;
-            this.currentContext = null;
-            document.getElementById('current-provider').textContent = 'No provider selected';
-            document.getElementById('current-model').textContent = '';
-            document.getElementById('chat-input').disabled = true;
-            document.getElementById('send-button').disabled = true;
-            document.getElementById('model-select').disabled = true;
+        const configuredProviders = this.chatManager.getConfiguredProviders();
+        if (configuredProviders.length === 0) {
+            this.messageRenderer.addSystemMessage('No providers configured. Please set API keys first.', 'error');
             return;
         }
 
-        if (!broadcastMode) {
-            this.currentProvider = provider;
-            document.getElementById('current-provider').textContent = provider.charAt(0).toUpperCase() + provider.slice(1);
+        this.isProcessing = true;
+        this.uiController.setProcessing(true);
 
-            // Load schema and create context
-            try {
-                let context = this.contexts.get(provider);
+        // Add user message
+        this.messageRenderer.addUserMessage(message);
+        this.chatManager.addMessage('user', message, 'broadcast');
 
-                if (!context) {
-                    const response = await fetch(`schemas/${provider}.json`);
-                    if (!response.ok) {
-                        throw new Error(`Failed to load schema: ${response.statusText}`);
-                    }
-                    const schema = await response.json();
-                    context = new GeneralContext(schema);
-                    this.contexts.set(provider, context);
+        // Show broadcast notification
+        this.messageRenderer.addBroadcastMessage(
+            `Broadcasting to ${configuredProviders.length} providers: ${configuredProviders.join(', ')}`
+        );
+
+        const state = this.uiController.getState();
+        const systemMessage = this.uiController.getSystemMessage();
+
+        // Clear messages if multi-turn is disabled
+        if (!state.multiTurnEnabled) {
+            configuredProviders.forEach(provider => {
+                const context = this.chatManager.getContext(provider);
+                if (context) {
+                    context.clearUserMessages();
                 }
-
-                this.currentContext = context;
-
-                // Set API key if available
-                const apiKey = getApiKeyForProvider(provider);
-                if (apiKey) {
-                    context.setApiKey(apiKey);
-                }
-
-                // Update model selection
-                this.updateModelSelection(context);
-
-                // Enable/disable UI based on API key
-                const hasKey = context.hasApiKey();
-                document.getElementById('chat-input').disabled = !hasKey;
-                document.getElementById('send-button').disabled = !hasKey;
-                document.getElementById('model-select').disabled = !hasKey;
-
-                if (!hasKey) {
-                    this.showMessage('system', `Please enter your API key for ${provider} to start chatting.`);
-                }
-
-            } catch (error) {
-                console.error('Error loading provider:', error);
-                this.showMessage('error', `Failed to load provider: ${error.message}`);
-            }
+            });
         }
-    }
 
-    updateModelSelection(context) {
-        const modelSelect = document.getElementById('model-select');
-        const models = context.getSupportedModels();
+        // Send to all providers
+        const promises = configuredProviders.map(provider => {
+            if (state.streamingEnabled) {
+                const streamingMessage = this.messageRenderer.createStreamingMessage(provider);
 
-        modelSelect.innerHTML = '<option value="">Select Model...</option>';
-        models.forEach(model => {
-            const option = document.createElement('option');
-            option.value = model;
-            option.textContent = model;
-            modelSelect.appendChild(option);
+                return this.providerManager.sendToProvider(provider, message, {
+                    streaming: true,
+                    systemMessage: systemMessage,
+                    onProgress: (chunk, fullText) => {
+                        streamingMessage.updateContent(fullText);
+                    },
+                    onComplete: (fullText) => {
+                        streamingMessage.finalize();
+
+                        // Only add to context/history if multi-turn is enabled
+                        if (state.multiTurnEnabled) {
+                            this.chatManager.addMessage('assistant', fullText, provider);
+                        }
+                    },
+                    onError: (error) => {
+                        this.messageRenderer.addSystemMessage(
+                            `${provider} error: ${error.message}`,
+                            'error'
+                        );
+                    }
+                });
+            } else {
+                return this.providerManager.sendToProvider(provider, message, {
+                    streaming: false,
+                    systemMessage: systemMessage,
+                    onComplete: (text, usage) => {
+                        // Add assistant message to UI
+                        this.messageRenderer.addAssistantMessage(text, provider);
+
+                        // Only add to context/history if multi-turn is enabled
+                        if (state.multiTurnEnabled) {
+                            this.chatManager.addMessage('assistant', text, provider);
+                        }
+
+                        if (usage?.total_tokens) {
+                            this.chatManager.updateTokenCount(usage.total_tokens);
+                        }
+                    },
+                    onError: (error) => {
+                        this.messageRenderer.addSystemMessage(
+                            `${provider} error: ${error.message}`,
+                            'error'
+                        );
+                    }
+                });
+            }
         });
 
-        // Select default model
-        const schema = context.getSchema();
-        if (schema.models?.default) {
-            modelSelect.value = schema.models.default;
-            context.setModel(schema.models.default);
-            document.getElementById('current-model').textContent = schema.models.default;
+        await Promise.allSettled(promises);
+
+        this.updateStats();
+        this.isProcessing = false;
+        this.uiController.setProcessing(false);
+    }
+
+    async onProviderChange(provider) {
+        if (!provider) {
+            this.currentProvider = null;
+            this.uiController.updateProviderInfo(null, null);
+            this.uiController.enableInputs(false);
+
+            // Also update the text input and send button
+            const textInput = document.getElementById('text-input');
+            const sendButton = document.getElementById('send-button');
+            if (textInput) textInput.disabled = true;
+            if (sendButton) sendButton.disabled = true;
+
+            return;
+        }
+
+        try {
+            this.currentProvider = provider;
+            const context = await this.chatManager.loadProvider(provider);
+
+            // Update UI
+            const models = context.getSupportedModels();
+            const defaultModel = context.getSchema().models?.default;
+
+            this.uiController.updateProviderInfo(provider, defaultModel);
+            this.uiController.updateModelSelection(models, defaultModel);
+
+            if (defaultModel) {
+                context.setModel(defaultModel);
+            }
+
+            // Enable/disable based on API key
+            const hasKey = context.hasApiKey();
+            this.uiController.enableInputs(hasKey);
+
+            // Also update the text input and send button
+            const textInput = document.getElementById('text-input');
+            const sendButton = document.getElementById('send-button');
+            if (textInput) textInput.disabled = !hasKey;
+            if (sendButton) sendButton.disabled = !hasKey;
+
+            if (!hasKey) {
+                this.messageRenderer.addSystemMessage(
+                    `Please enter your API key for ${provider} to start chatting.`
+                );
+            }
+
+        } catch (error) {
+            console.error('Error loading provider:', error);
+            this.messageRenderer.addSystemMessage(`Failed to load provider: ${error.message}`, 'error');
         }
     }
 
     onModelChange(model) {
-        if (this.currentContext && model) {
-            this.currentContext.setModel(model);
-            document.getElementById('current-model').textContent = model;
+        if (this.currentProvider && model) {
+            const context = this.chatManager.getContext(this.currentProvider);
+            if (context) {
+                context.setModel(model);
+                this.uiController.updateProviderInfo(this.currentProvider, model);
+            }
+        }
+    }
+
+    onBroadcastModeChange(enabled) {
+        if (enabled) {
+            const hasAnyKey = this.chatManager.getConfiguredProviders().length > 0;
+            this.uiController.enableInputs(hasAnyKey);
+
+            if (!hasAnyKey) {
+                this.messageRenderer.addSystemMessage(
+                    'Please configure at least one API key to use broadcast mode.'
+                );
+            }
+        } else if (this.currentProvider) {
+            const context = this.chatManager.getContext(this.currentProvider);
+            const hasKey = context?.hasApiKey() || false;
+            this.uiController.enableInputs(hasKey);
+        }
+    }
+
+    onStreamingChange(enabled) {
+        // Could add any streaming-specific logic here
+        console.log('Streaming:', enabled);
+    }
+
+    onMarkdownChange(enabled) {
+        this.messageRenderer.setMarkdownEnabled(enabled);
+    }
+
+    onMultiTurnChange(enabled) {
+        console.log('Multi-turn conversation:', enabled);
+
+        // If multi-turn is disabled, clear conversation history
+        if (!enabled) {
+            // Clear messages for all contexts
+            this.chatManager.clearAllContextMessages();
         }
     }
 
@@ -233,22 +406,24 @@ export class HyniChat {
         setApiKeyForProvider(provider, apiKey, true);
         input.value = '';
 
-        // Update context if it's the current provider
-        if (this.currentProvider === provider && this.currentContext) {
-            this.currentContext.setApiKey(apiKey);
-            document.getElementById('chat-input').disabled = false;
-            document.getElementById('send-button').disabled = false;
-            document.getElementById('model-select').disabled = false;
+        // Update context if loaded
+        const context = this.chatManager.getContext(provider);
+        if (context) {
+            context.setApiKey(apiKey);
         }
 
-        // Update broadcast mode availability
-        const broadcastCheck = document.getElementById('broadcast-check');
-        if (broadcastCheck.checked) {
-            this.updateBroadcastUI(true);
+        // Update UI
+        if (this.currentProvider === provider) {
+            this.uiController.enableInputs(true);
+        }
+
+        const state = this.uiController.getState();
+        if (state.broadcastMode) {
+            this.onBroadcastModeChange(true);
         }
 
         this.updateApiKeysUI();
-        this.showMessage('system', `API key set for ${provider}`);
+        this.messageRenderer.addSystemMessage(`API key set for ${provider}`);
     }
 
     removeApiKey(provider) {
@@ -256,18 +431,16 @@ export class HyniChat {
         sessionStorage.removeItem(`hyni_${this.getEnvVar(provider)}`);
 
         if (this.currentProvider === provider) {
-            document.getElementById('chat-input').disabled = true;
-            document.getElementById('send-button').disabled = true;
+            this.uiController.enableInputs(false);
         }
 
-        // Update broadcast mode availability
-        const broadcastCheck = document.getElementById('broadcast-check');
-        if (broadcastCheck.checked) {
-            this.updateBroadcastUI(true);
+        const state = this.uiController.getState();
+        if (state.broadcastMode) {
+            this.onBroadcastModeChange(true);
         }
 
         this.updateApiKeysUI();
-        this.showMessage('system', `API key removed for ${provider}`);
+        this.messageRenderer.addSystemMessage(`API key removed for ${provider}`);
     }
 
     getEnvVar(provider) {
@@ -287,31 +460,30 @@ export class HyniChat {
         try {
             await loadApiKeysFromFile(file);
             this.updateApiKeysUI();
-            this.showMessage('system', 'API keys loaded from file');
+            this.messageRenderer.addSystemMessage('API keys loaded from file');
 
-            // Update current context if needed
-            if (this.currentProvider && this.currentContext) {
-                const apiKey = getApiKeyForProvider(this.currentProvider);
+            // Reload contexts with new keys
+            for (const [provider, context] of this.chatManager.contexts) {
+                const apiKey = getApiKeyForProvider(provider);
                 if (apiKey) {
-                    this.currentContext.setApiKey(apiKey);
-                    document.getElementById('chat-input').disabled = false;
-                    document.getElementById('send-button').disabled = false;
-                    document.getElementById('model-select').disabled = false;
+                    context.setApiKey(apiKey);
                 }
             }
 
-            // Update broadcast mode availability
-            const broadcastCheck = document.getElementById('broadcast-check');
-            if (broadcastCheck.checked) {
-                this.updateBroadcastUI(true);
+            // Update current provider state
+            if (this.currentProvider) {
+                const context = this.chatManager.getContext(this.currentProvider);
+                if (context?.hasApiKey()) {
+                    this.uiController.enableInputs(true);
+                }
             }
+
         } catch (error) {
-            this.showMessage('error', `Failed to load keys: ${error.message}`);
+            this.messageRenderer.addSystemMessage(`Failed to load keys: ${error.message}`, 'error');
         }
     }
 
     loadProviderKeys() {
-        // Check URL parameters for API keys (useful for demos)
         const params = new URLSearchParams(window.location.search);
         const providers = ['openai', 'claude', 'deepseek', 'mistral'];
 
@@ -325,595 +497,22 @@ export class HyniChat {
         this.updateApiKeysUI();
     }
 
-    async sendMessage() {
-        const broadcastMode = document.getElementById('broadcast-check').checked;
-
-        if (broadcastMode) {
-            await this.broadcastMessage();
-        } else {
-            await this.sendSingleMessage();
-        }
-    }
-
-    async broadcastMessage() {
-        if (this.isProcessing) return;
-
-        const input = document.getElementById('chat-input');
-        const message = input.value.trim();
-
-        if (!message) return;
-
-        const configuredProviders = this.getConfiguredProviders();
-        if (configuredProviders.length === 0) {
-            this.showMessage('error', 'No providers configured. Please set API keys first.');
-            return;
-        }
-
-        this.isProcessing = true;
-        input.value = '';
-
-        // Update UI
-        document.getElementById('send-button').disabled = true;
-        document.getElementById('send-text').style.display = 'none';
-        document.getElementById('send-spinner').style.display = 'inline-block';
-
-        // Add user message
-        this.showMessage('user', message);
-        this.messageCount++;
-
-        // Show broadcast notification
-        this.showMessage('broadcast', `Broadcasting to ${configuredProviders.length} providers: ${configuredProviders.join(', ')}`);
-
-        // Send to all configured providers
-        const promises = configuredProviders.map(provider =>
-            this.sendToProvider(provider, message)
-        );
-
-        // Wait for all responses
-        await Promise.allSettled(promises);
-
-        this.messageCount += configuredProviders.length;
-        this.updateStats();
-
-        // Reset UI
-        this.isProcessing = false;
-        document.getElementById('send-button').disabled = false;
-        document.getElementById('send-text').style.display = 'inline';
-        document.getElementById('send-spinner').style.display = 'none';
-    }
-
-    async sendToProvider(provider, message) {
-        try {
-            // Load or get context for provider
-            let context = this.contexts.get(provider);
-
-            if (!context) {
-                const response = await fetch(`schemas/${provider}.json`);
-                if (!response.ok) {
-                    throw new Error(`Failed to load schema: ${response.statusText}`);
-                }
-                const schema = await response.json();
-                context = new GeneralContext(schema);
-                this.contexts.set(provider, context);
-            }
-
-            // Set API key
-            const apiKey = getApiKeyForProvider(provider);
-            if (apiKey) {
-                context.setApiKey(apiKey);
-            } else {
-                throw new Error('No API key configured');
-            }
-
-            // Set default model
-            const schema = context.getSchema();
-            if (schema.models?.default) {
-                context.setModel(schema.models.default);
-            }
-
-            // Set system message if provided
-            const systemMessage = document.getElementById('system-message').value.trim();
-            if (systemMessage && context.supportsSystemMessages()) {
-                context.setSystemMessage(systemMessage);
-            }
-
-            // Add user message to context
-            context.addUserMessage(message);
-
-            // Check if streaming is enabled and supported
-            const useStreaming = document.getElementById('streaming-check').checked &&
-                               context.supportsStreaming();
-
-            if (useStreaming) {
-                await this.sendProviderStreamingMessage(provider, context);
-            } else {
-                await this.sendProviderNormalMessage(provider, context);
-            }
-
-        } catch (error) {
-            console.error(`Error with ${provider}:`, error);
-            this.showProviderMessage(provider, 'error', `Error: ${error.message}`);
-        }
-    }
-
-    async sendProviderNormalMessage(provider, context) {
-        const request = context.buildRequest(false);
-        const headers = Object.fromEntries(context.getHeaders());
-
-        let endpoint;
-        let fetchOptions;
-
-        // Use proxy for Claude
-        if (provider === 'claude') {
-            endpoint = 'http://localhost:3001/api/proxy/claude';
-            fetchOptions = {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    endpoint: context.getEndpoint(),
-                    headers: headers,
-                    body: request
-                })
-            };
-        } else {
-            endpoint = context.getEndpoint();
-            fetchOptions = {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(request)
-            };
-        }
-
-        const response = await fetch(endpoint, fetchOptions);
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`API error (${response.status}): ${errorText}`);
-        }
-
-        const data = await response.json();
-        const text = context.extractTextResponse(data);
-
-        // Add assistant message to context for multi-turn
-        context.addAssistantMessage(text);
-
-        this.showProviderMessage(provider, 'assistant', text);
-
-        // Update token count if available
-        if (data.usage) {
-            this.tokenCount += (data.usage.total_tokens || 0);
-        }
-    }
-
-    async sendProviderStreamingMessage(provider, context) {
-        const request = context.buildRequest(true);
-        const headers = Object.fromEntries(context.getHeaders());
-
-        let endpoint;
-        let fetchOptions;
-
-        // Use proxy for Claude
-        if (provider === 'claude') {
-            endpoint = 'http://localhost:3001/api/stream/claude';
-            fetchOptions = {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    endpoint: context.getEndpoint(),
-                    headers: headers,
-                    body: request
-                })
-            };
-        } else {
-            endpoint = context.getEndpoint();
-            fetchOptions = {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(request)
-            };
-        }
-
-        const response = await fetch(endpoint, fetchOptions);
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`API error (${response.status}): ${errorText}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-
-        // Create assistant message container
-        const messageDiv = this.createProviderMessageElement(provider, 'assistant', '');
-        const contentDiv = messageDiv.querySelector('.message-content');
-        let fullText = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const data = line.slice(6).trim();
-                    if (data === '[DONE]') continue;
-
-                    try {
-                        const json = JSON.parse(data);
-                        const content = this.extractStreamingContent(json);
-                        if (content) {
-                            fullText += content;
-                            contentDiv.textContent = fullText;
-                            this.scrollToBottom();
-                        }
-                    } catch (e) {
-                        // Skip invalid JSON
-                    }
-                }
-            }
-        }
-
-        // Add to context for multi-turn
-        context.addAssistantMessage(fullText);
-
-        // Render markdown if enabled
-        if (document.getElementById('markdown-check').checked) {
-            contentDiv.innerHTML = this.renderMarkdown(fullText);
-        }
-    }
-
-    async sendSingleMessage() {
-        if (this.isProcessing || !this.currentContext) return;
-
-        const input = document.getElementById('chat-input');
-        const message = input.value.trim();
-
-        if (!message) return;
-
-        this.isProcessing = true;
-        input.value = '';
-
-        // Update UI
-        document.getElementById('send-button').disabled = true;
-        document.getElementById('send-text').style.display = 'none';
-        document.getElementById('send-spinner').style.display = 'inline-block';
-
-        // Add user message
-        this.showMessage('user', message);
-        this.messageCount++;
-
-        try {
-            // Set system message if provided
-            const systemMessage = document.getElementById('system-message').value.trim();
-            if (systemMessage && this.currentContext.supportsSystemMessages()) {
-                this.currentContext.setSystemMessage(systemMessage);
-            }
-
-            // Add user message to context
-            this.currentContext.addUserMessage(message);
-
-            // Check if streaming is enabled
-            const useStreaming = document.getElementById('streaming-check').checked &&
-                               this.currentContext.supportsStreaming();
-
-            if (useStreaming) {
-                await this.sendStreamingMessage();
-            } else {
-                await this.sendNormalMessage();
-            }
-
-            this.messageCount++;
-            this.updateStats();
-
-        } catch (error) {
-            console.error('Error sending message:', error);
-            this.showMessage('error', `Error: ${error.message}`);
-        } finally {
-            this.isProcessing = false;
-            document.getElementById('send-button').disabled = false;
-            document.getElementById('send-text').style.display = 'inline';
-            document.getElementById('send-spinner').style.display = 'none';
-        }
-    }
-
-    async sendNormalMessage() {
-        const request = this.currentContext.buildRequest(false);
-        const headers = Object.fromEntries(this.currentContext.getHeaders());
-
-        let endpoint;
-        let fetchOptions;
-
-        // Use proxy for Claude
-        if (this.currentProvider === 'claude') {
-            endpoint = 'http://localhost:3001/api/proxy/claude';
-            fetchOptions = {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    endpoint: this.currentContext.getEndpoint(),
-                    headers: headers,
-                    body: request
-                })
-            };
-        } else {
-            endpoint = this.currentContext.getEndpoint();
-            fetchOptions = {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(request)
-            };
-        }
-
-        const response = await fetch(endpoint, fetchOptions);
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`API error (${response.status}): ${errorText}`);
-        }
-
-        const data = await response.json();
-        const text = this.currentContext.extractTextResponse(data);
-
-        // Add assistant message to context for multi-turn
-        this.currentContext.addAssistantMessage(text);
-
-        this.showMessage('assistant', text);
-
-        // Update token count if available
-        if (data.usage) {
-            this.tokenCount += (data.usage.total_tokens || 0);
-        }
-    }
-
-    async sendStreamingMessage() {
-        const request = this.currentContext.buildRequest(true);
-        const headers = Object.fromEntries(this.currentContext.getHeaders());
-
-        let endpoint;
-        let fetchOptions;
-
-        // Use proxy for Claude
-        if (this.currentProvider === 'claude') {
-            endpoint = 'http://localhost:3001/api/stream/claude';
-            fetchOptions = {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    endpoint: this.currentContext.getEndpoint(),
-                    headers: headers,
-                    body: request
-                })
-            };
-        } else {
-            endpoint = this.currentContext.getEndpoint();
-            fetchOptions = {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(request)
-            };
-        }
-
-        const response = await fetch(endpoint, fetchOptions);
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`API error (${response.status}): ${errorText}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-
-        // Create assistant message container
-        const messageDiv = this.createMessageElement('assistant', '');
-        const contentDiv = messageDiv.querySelector('.message-content');
-        let fullText = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const data = line.slice(6).trim();
-                    if (data === '[DONE]') continue;
-
-                    try {
-                        const json = JSON.parse(data);
-                        const content = this.extractStreamingContent(json);
-                        if (content) {
-                            fullText += content;
-                            contentDiv.textContent = fullText;
-                            this.scrollToBottom();
-                        }
-                    } catch (e) {
-                        // Skip invalid JSON
-                    }
-                }
-            }
-        }
-
-        // Add to context for multi-turn
-        this.currentContext.addAssistantMessage(fullText);
-
-        // Render markdown if enabled
-        if (document.getElementById('markdown-check').checked) {
-            contentDiv.innerHTML = this.renderMarkdown(fullText);
-        }
-    }
-
-    extractStreamingContent(json) {
-        // OpenAI/DeepSeek format
-        if (json.choices?.[0]?.delta?.content) {
-            return json.choices[0].delta.content;
-        }
-
-        // Claude format
-        if (json.delta?.text) {
-            return json.delta.text;
-        }
-
-        // Mistral format
-        if (json.choices?.[0]?.delta?.content !== undefined) {
-            return json.choices[0].delta.content;
-        }
-
-        return '';
-    }
-
-    showMessage(role, content) {
-        const element = this.createMessageElement(role, content);
-        this.scrollToBottom();
-    }
-
-    showProviderMessage(provider, role, content) {
-        const element = this.createProviderMessageElement(provider, role, content);
-        this.scrollToBottom();
-    }
-
-    createProviderMessageElement(provider, role, content) {
-        const messagesContainer = document.getElementById('chat-messages');
-
-        // Clear placeholder if exists
-        if (messagesContainer.children.length === 1 &&
-            messagesContainer.children[0].style.textAlign === 'center') {
-            messagesContainer.innerHTML = '';
-        }
-
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${role} ${provider}`;
-
-        const headerDiv = document.createElement('div');
-        headerDiv.className = 'message-header';
-
-        const icon = role === 'assistant' ? '🤖' : role === 'error' ? '❌' : 'ℹ️';
-        const label = provider.charAt(0).toUpperCase() + provider.slice(1);
-        const time = new Date().toLocaleTimeString();
-
-        headerDiv.innerHTML = `
-            <span>${icon}</span>
-            <span>${label}</span>
-            <span class="provider-badge ${provider}">${provider}</span>
-            <span style="color: #999; font-size: 12px;">${time}</span>
-        `;
-
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-
-        if (document.getElementById('markdown-check').checked && role === 'assistant') {
-            contentDiv.innerHTML = this.renderMarkdown(content);
-        } else {
-            contentDiv.textContent = content;
-        }
-
-        messageDiv.appendChild(headerDiv);
-        messageDiv.appendChild(contentDiv);
-        messagesContainer.appendChild(messageDiv);
-
-        return messageDiv;
-    }
-
-    createMessageElement(role, content) {
-        const messagesContainer = document.getElementById('chat-messages');
-
-        // Clear placeholder if exists
-        if (messagesContainer.children.length === 1 &&
-            messagesContainer.children[0].style.textAlign === 'center') {
-            messagesContainer.innerHTML = '';
-        }
-
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${role}`;
-
-        const headerDiv = document.createElement('div');
-        headerDiv.className = 'message-header';
-
-        const icon = role === 'user' ? '👤' : role === 'assistant' ? '🤖' : role === 'error' ? '❌' : role === 'broadcast' ? '📡' : 'ℹ️';
-        const label = role === 'user' ? 'You' : role === 'assistant' ? this.currentProvider : role.charAt(0).toUpperCase() + role.slice(1);
-        const time = new Date().toLocaleTimeString();
-
-        headerDiv.innerHTML = `
-            <span>${icon}</span>
-            <span>${label}</span>
-            <span style="color: #999; font-size: 12px;">${time}</span>
-        `;
-
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-
-        if (document.getElementById('markdown-check').checked && role === 'assistant') {
-            contentDiv.innerHTML = this.renderMarkdown(content);
-        } else {
-            contentDiv.textContent = content;
-        }
-
-        messageDiv.appendChild(headerDiv);
-        messageDiv.appendChild(contentDiv);
-        messagesContainer.appendChild(messageDiv);
-
-        return messageDiv;
-    }
-
-    renderMarkdown(text) {
-        // Simple markdown rendering
-        let html = text
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-                return `<pre><code class="language-${lang || 'plaintext'}">${code.trim()}</code></pre>`;
-            })
-            .replace(/`([^`]+)`/g, '<code>$1</code>')
-            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-            .replace(/\n/g, '<br>');
-
-        return html;
-    }
-
     clearChat() {
         if (confirm('Clear all messages?')) {
-            document.getElementById('chat-messages').innerHTML = `
-                <div style="text-align: center; color: #999; padding: 40px;">
-                    Chat cleared. Start a new conversation.
-                </div>
-            `;
-
-            // Clear all contexts
-            this.contexts.forEach(context => {
-                context.clearUserMessages();
-            });
-
-            if (this.currentContext) {
-                this.currentContext.clearUserMessages();
-            }
-
-            this.messageCount = 0;
-            this.tokenCount = 0;
+            this.messageRenderer.clearAllMessages();
+            this.chatManager.clearHistory();
             this.updateStats();
         }
-    }
-
-    scrollToBottom() {
-        const messagesContainer = document.getElementById('chat-messages');
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
     updateStats() {
-        document.getElementById('message-count').textContent = this.messageCount;
-        document.getElementById('token-count').textContent = this.tokenCount > 1000 ?
-            `${(this.tokenCount / 1000).toFixed(1)}k` : this.tokenCount;
+        const stats = this.chatManager.getStats();
+        this.uiController.updateStats(stats.messageCount, stats.tokenCount);
+    }
+
+    cleanup() {
+        if (this.inputManager) {
+            this.inputManager.cleanup();
+        }
     }
 }

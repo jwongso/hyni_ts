@@ -1,10 +1,11 @@
-# Hyni Chat - Multi-Provider LLM Interface
+# Hyni Chat - Multi-Provider LLM Interface with Voice Input
 
-A powerful, schema-driven TypeScript/JavaScript library for unified interaction with multiple Large Language Model providers. Hyni Chat provides a consistent API across OpenAI, Claude, DeepSeek, Mistral, and other LLM services through JSON schema configuration.
+A powerful, schema-driven TypeScript/JavaScript library for unified interaction with multiple Large Language Model providers. Hyni Chat provides a consistent API across OpenAI, Claude, DeepSeek, Mistral, and other LLM services through JSON schema configuration, now with integrated Automatic Speech Recognition (ASR) powered by wstream, based on Whisper.cpp WASM implementation.
 
 --- 
 
 ## ✨ Features
+- 🎤 **Voice Input with ASR** - Real-time speech recognition using wstream WASM
 - 🔄 **Multi-Provider Support** - One interface for OpenAI, Claude, DeepSeek, Mistral, and more
 - 📋 **Schema-Driven** - JSON schemas define provider capabilities and request formats
 - 🌊 **Streaming Support** - Real-time response streaming where supported
@@ -13,13 +14,17 @@ A powerful, schema-driven TypeScript/JavaScript library for unified interaction 
 - 📱 **Browser & Node.js** - Works in both environments
 - 🎨 **Modern UI** - Beautiful web interface with broadcast messaging
 - ⚡ **TypeScript First** - Full type safety and IntelliSense support
+- 🎯 **Multi-turn Conversations** - Maintain context across messages
 
 ## 🚀 Quick Start
+
 ### Installation
 ```html
 <!-- Include in your HTML -->
+<script src="modules/asr/wstream_wasm.js"></script>
 <script type="module" src="hyni-chat.js"></script>
 ```
+
 ## Basic Usage
 ```typescript
 import { GeneralContext } from './dist/general_context.js';
@@ -52,25 +57,67 @@ const data = await apiResponse.json();
 const reply = context.extractTextResponse(data);
 console.log(reply);
 ```
-## Web Interface
+
+## Voice Input with ASR
+
+### Setting up ASR Models
+Download Whisper models and place them in the models/ directory:
+- ggml-tiny.en.bin - Tiny model (39 MB)
+- ggml-tiny.en-q5_1.bin - Tiny Q5_1 (31 MB)
+- ggml-base.en.bin - Base model (142 MB)
+- ggml-base.en-q5_1.bin - Base Q5_1 (57 MB) - Default
+
+### Using Voice Input
+The UI automatically includes voice input mode
+Users can switch between text and voice input
+
+Voice input features:
+- Real-time transcription as you speak
+- Confidence filtering (adjustable threshold)
+- Keyboard shortcuts: 'S' to send, 'C' to clear
+- Multiple ASR model options
+- Continuous transcription (appends to existing text)
+
+## Web Interface with Voice
 ```html
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Hyni Chat</title>
+    <title>Hyni Chat with Voice</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id="hyni-chat-container"></div>
+    <div class="container">
+        <!-- Voice/Text mode switcher included automatically -->
+        <div id="hyni-chat-container"></div>
+    </div>
+    
+    <!-- Load ASR WASM module first -->
+    <script src="modules/asr/wstream_wasm.js"></script>
     
     <script type="module">
         import { HyniChat } from './hyni-chat.js';
-        const chat = new HyniChat();
+        window.addEventListener('load', async () => {
+            window.hyniChat = new HyniChat();
+        });
     </script>
 </body>
 </html>
 ```
 ## 🎯 Why Hyni Chat?
+
+### Voice + Multi-Provider = Ultimate Flexibility
+- Speak your question once, get answers from multiple AI providers
+- Switch between typing and speaking seamlessly
+- Compare responses from different models with voice input
+
+Example: Voice broadcast
+1. Switch to voice mode
+2. Click microphone and speak your question
+3. Press 'S' or click "Send Transcription"
+4. Enable broadcast mode
+5. Get responses from all configured providers
+
 ### Before (Multiple SDKs)
 ```javascript
 // OpenAI
@@ -243,10 +290,26 @@ if (errors.length > 0) {
 
 ## 🏗️ Project Structure
 ```
-hyni_ts/
+hyni-chat/
 ├── index.html              # Web interface
 ├── styles.css              # UI styling
 ├── hyni-chat.js           # Main chat application
+├── modules/
+│   ├── asr/               # ASR components
+│   │   ├── wstream-asr.js # ASR wrapper
+│   │   ├── wstream_wasm.js # Whisper WASM
+│   │   └── wstream_wasm.wasm
+│   ├── chat/              # Chat components
+│   │   ├── chat-manager.js
+│   │   ├── provider-manager.js
+│   │   └── message-renderer.js
+│   └── ui/                # UI components
+│       ├── input-manager.js # Handles text/voice input
+│       └── ui-controller.js
+├── models/                # Whisper models
+│   ├── ggml-tiny.en.bin
+│   ├── ggml-base.en.bin
+│   └── ...
 ├── dist/
 │   ├── general_context.js  # Core context class
 │   └── api-keys.js        # API key management
@@ -258,8 +321,20 @@ hyni_ts/
 └── README.md
 ```
 ## 📚 API Reference
+
+### Voice Input Methods
+- switchMode('voice')	Switch to voice input mode
+- toggleVoiceInput()	Start/stop recording
+- setConfidenceThreshold(value)	Set ASR confidence filter
+- changeASRModel(path)	Change Whisper model
+- clearTranscription()	Clear current transcription
+- useTranscription()	Send transcribed text
+
+### Keyboard Shortcuts (Voice Mode)
+- S	Send transcription
+- C	Clear transcription
+
 ### GeneralContext Methods
-Method	Description
 - setModel(model)	Set the model to use
 - setSystemMessage(text)	Set system message
 - setParameter(key, value)	Set request parameter
@@ -272,14 +347,13 @@ Method	Description
 - getValidationErrors()	Get validation errors
 
 ### API Key Functions
-Function	Description
 - setApiKeyForProvider(provider, key, persistent?)	Set API key
 - getApiKeyForProvider(provider)	Get API key
 - loadApiKeysFromFile(file)	Load from file
 - parseHynirc(content)	Parse .hynirc format
 - clearAllApiKeys()	Clear all keys
 
-## 🎨 Web Interface Features
+### 🎨 Web Interface Features
 - Provider Selection - Easy switching between LLM providers
 - Model Selection - Choose from available models per provider
 - Broadcast Mode - Send to multiple providers at once
@@ -288,6 +362,26 @@ Function	Description
 - API Key Management - Secure key storage and loading
 - Statistics - Track message and token counts
 - Responsive Design - Works on desktop and mobile
+- Text Input - Traditional typing with Ctrl+Enter to send
+- Voice Input - Click-to-talk with real-time transcription
+- Mode Switching - Seamless switch between text and voice
+
+### Voice Features
+- Live Transcription - See words as they're recognized
+- Confidence Filtering - Adjust accuracy threshold
+- Model Selection - Choose ASR model based on needs
+- Keyboard Shortcuts - Quick actions without clicking
+- Continuous Speech - Transcription appends naturally
+
+### Chat Features
+- Provider Selection - Easy switching between LLM providers
+- Model Selection - Choose from available models per provider
+- Broadcast Mode - Send to multiple providers at once
+- Streaming Toggle - Enable/disable real-time streaming
+- Multi-turn Toggle - Control conversation context
+- Markdown Rendering - Beautiful formatting of responses
+- API Key Management - Secure key storage and loading
+- Statistics - Track message and token counts
 
 ## 🔒 Security
 - Local Storage - API keys stored in browser localStorage

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hyni Chat - Multi-Provider LLM Interface</title>
+    <title>Hyni Chat - Multi-Provider LLM Interface with ASR</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,6 +12,7 @@
             <h1>
                 <span>🤖</span>
                 <span>Hyni Chat - Multi-Provider LLM Interface</span>
+                <span class="badge-new">Now with Voice Input! 🎤</span>
             </h1>
         </header>
 
@@ -69,50 +70,29 @@
 
                 <div class="chat-messages" id="chat-messages">
                     <div style="text-align: center; color: #999; padding: 40px;">
-                        Select a provider and enter your API key to start chatting
+                        Select a provider and enter your API key to start chatting<br>
+                        <small>You can use text input or voice input (ASR)</small>
                     </div>
                 </div>
 
+                <!-- Input container will be populated by InputManager -->
                 <div class="chat-input-container">
-                    <div class="chat-input-wrapper">
-                        <textarea
-                            id="chat-input"
-                            class="chat-input"
-                            placeholder="Type your message here... (Ctrl+Enter to send)"
-                            disabled
-                        ></textarea>
-                        <button id="send-button" class="send-button" disabled>
-                            <span id="send-text">Send</span>
-                            <span id="send-spinner" class="loading-spinner" style="display: none;"></span>
-                        </button>
-                    </div>
-                    <div class="chat-options">
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="broadcast-check">
-                            <label for="broadcast-check" title="Send to all configured providers">📡 Broadcast</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="streaming-check">
-                            <label for="streaming-check">Enable Streaming</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="markdown-check" checked>
-                            <label for="markdown-check">Render Markdown</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="text" id="system-message" placeholder="System message (optional)" style="margin-left: 20px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;">
-                        </div>
-                    </div>
+                    <!-- Dynamic content will be inserted here by InputManager -->
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- Load WASM module first -->
+    <script src="modules/asr/wstream_wasm.js"></script>
+
     <script type="module">
         import { HyniChat } from './hyni-chat.js';
 
-        // Initialize the app
-        window.hyniChat = new HyniChat();
+        // Initialize when page loads
+        window.addEventListener('load', async () => {
+            window.hyniChat = new HyniChat();
+        });
     </script>
 </body>
 </html>

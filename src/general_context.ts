@@ -778,6 +778,10 @@ export class GeneralContext {
         return [...this.messages];
     }
 
+    getCurrentModel(): string {
+        return this.modelName;
+    }
+
     // Export/Import for state persistence
     exportState(): any {
         return {
